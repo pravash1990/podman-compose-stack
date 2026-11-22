@@ -195,3 +195,16 @@
   - Configured HCV vault backend with AppRole authentication and dynamic PostgreSQL secret queries.
 
 ---
+
+
+## [2026-11-22 17:51:48 UTC] Start OpenBao Container & Verify Cubbyhole Secret Wrapping
+**User Prompt:**
+> can you start openbao by podman-compose and one thing can it possible to get openbao secret by cubyhole with a onetime secretid so that it can not be reused ?
+
+**Actions Taken:**
+- Started OpenBao container `ob` with rootless Podman storage on port 8200 across `data_net`, `app_net`, and `ops_net`.
+- Updated `ob` environment in `podman-compose.yml` to specify both `BAO_DEV_*` and `VAULT_DEV_*` variables for root token configuration.
+- Verified OpenBao HTTP health endpoint and active unsealed status.
+- Documented Cubbyhole single-use response wrapping and single-use AppRole Secret IDs (`secret_id_num_uses=1`).
+
+---
