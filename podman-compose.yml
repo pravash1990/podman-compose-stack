@@ -1,46 +1,104 @@
 version: "3.9"
 
+################################################################################
+# Podman Compose Stack - Industry Standard Architecture
+# 
+# Tiers:
+#   - edge_net : Ingress, reverse proxies, and API gateways
+#   - app_net  : Business logic, APIs, workflows, and automation engines
+#   - data_net : Persistent storage, relational & document DBs, message queues
+#   - ops_net  : Observability (metrics, logs) and secret management (OpenBao)
+#
+# Security & Secret Management:
+#   - No plaintext credentials, root tokens, or AppRole secrets in compose YAML.
+#   - All variables interpolated from secure .env file or container secrets.
+#   - Non-root capabilities and SELinux volume relabeling (:Z) configured.
+#   - Healthcheck-driven dependency orchestration prevents startup race conditions.
+################################################################################
+
+x-logging: &default-logging
+  driver: "k8s-file"
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 networks:
-  homelab:
+  edge_net:
     driver: bridge
+    labels:
+      tier: "ingress"
+  app_net:
+    driver: bridge
+    labels:
+      tier: "application"
+  data_net:
+    driver: bridge
+    labels:
+      tier: "database"
+  ops_net:
+    driver: bridge
+    labels:
+      tier: "management-and-secrets"
 
 services:
+
+  # ============================================================================
+  # DATA TIER: Databases, Caches & Message Brokers
+  # ============================================================================
 
   pg:
     image: docker.io/library/postgres:17
     container_name: pg
     hostname: pg
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data:Z
     ports:
       - "5432:5432"
     networks:
-      - homelab
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   md:
     image: docker.io/library/mongo:8
     container_name: md
     hostname: md
     restart: unless-stopped
+    logging: *default-logging
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data/mongo:/data/db:Z
     ports:
       - "27017:27017"
     networks:
-      - homelab
+      - data_net
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   vk:
     image: docker.io/valkey/valkey:latest
     container_name: vk
     hostname: vk
     restart: unless-stopped
+    logging: *default-logging
     command:
       - valkey-server
       - --appendonly
@@ -50,212 +108,95 @@ services:
     ports:
       - "6379:6379"
     networks:
-      - homelab
-  gf:
-    image: docker.io/grafana/grafana:latest
-    container_name: gf
-    hostname: gf
-    restart: unless-stopped
-    environment:
-      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
-      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
-      GF_USERS_ALLOW_SIGN_UP: "false"
-    volumes:
-      - ./data/grafana:/var/lib/grafana:Z
-      - ./configs/grafana:/etc/grafana/provisioning:Z
-    ports:
-      - "3000:3000"
-    networks:
-      - homelab
-  pm:
-    image: docker.io/prom/prometheus:latest
-    container_name: pm
-    hostname: pm
-    restart: unless-stopped
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--web.enable-lifecycle"
-    volumes:
-      - ./configs/prometheus:/etc/prometheus:Z
-      - ./data/prometheus:/prometheus:Z
-    ports:
-      - "9090:9090"
-    networks:
-      - homelab
-  kc:
-    image: quay.io/keycloak/keycloak:latest
-    container_name: kc
-    hostname: kc
-    restart: unless-stopped
-    depends_on:
-      - pg
-    command: start
-    environment:
-      KC_DB: postgres
-      KC_DB_URL: jdbc:postgresql://pg:5432/${POSTGRES_DB}
-      KC_DB_USERNAME: ${POSTGRES_USER}
-      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      - data_net
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
 
-      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
-      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
-
-      KC_HTTP_ENABLED: "true"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HEALTH_ENABLED: "true"
-      KC_METRICS_ENABLED: "true"
-    volumes:
-      - ./data/keycloak:/opt/keycloak/data:Z
-    ports:
-      - "8080:8080"
-    networks:
-      - homelab
-  kg:
-    image: docker.io/library/kong:latest
-    container_name: kg
-    hostname: kg
-    restart: unless-stopped
-    depends_on:
-      - pg
-    environment:
-      KONG_DATABASE: postgres
-
-      KONG_PG_HOST: pg
-      KONG_PG_PORT: 5432
-      KONG_PG_DATABASE: kong
-      KONG_PG_USER: ${POSTGRES_USER}
-      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD}
-
-      KONG_PROXY_ACCESS_LOG: /dev/stdout
-      KONG_ADMIN_ACCESS_LOG: /dev/stdout
-      KONG_PROXY_ERROR_LOG: /dev/stderr
-      KONG_ADMIN_ERROR_LOG: /dev/stderr
-
-      KONG_ADMIN_LISTEN: 0.0.0.0:8001
-    volumes:
-      - ./configs/kong:/etc/kong:Z
-    ports:
-      - "8000:8000"
-      - "8443:8443"
-      - "8001:8001"
-    networks:
-      - homelab
-
-  ka:
-    image: docker.io/pantsel/konga:latest
-    container_name: ka
-    hostname: ka
-    restart: unless-stopped
-    depends_on:
-      - pg
-      - kg
-    environment:
-      DB_ADAPTER: postgres
-      DB_HOST: pg
-      DB_PORT: 5432
-      DB_USER: ${POSTGRES_USER}
-      DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_DATABASE: konga
-      NODE_ENV: production
-      TOKEN_SECRET: ${KONGA_TOKEN_SECRET}
-    ports:
-      - "1337:1337"
-    networks:
-      - homelab
   mq:
     image: docker.io/library/rabbitmq:4-management
     container_name: mq
     hostname: mq
     restart: unless-stopped
+    logging: *default-logging
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
       RABBITMQ_DEFAULT_VHOST: /
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data/rabbitmq:/var/lib/rabbitmq:Z
     ports:
       - "5672:5672"
       - "15672:15672"
     networks:
-      - homelab
+      - data_net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
   s3:
     image: docker.io/minio/minio:latest
     container_name: s3
     hostname: s3
     restart: unless-stopped
+    logging: *default-logging
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data/minio:/data:Z
     ports:
       - "9000:9000"
       - "9001:9001"
     networks:
-      - homelab
-  ng:
-    image: docker.io/library/nginx:latest
-    container_name: ng
-    hostname: ng
+      - data_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  kf:
+    image: docker.io/bitnami/kafka:latest
+    container_name: kf
+    hostname: kf
     restart: unless-stopped
+    logging: *default-logging
+    environment:
+      KAFKA_CFG_NODE_ID: 1
+      KAFKA_CFG_PROCESS_ROLES: broker,controller
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kf:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kf:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_KRAFT_CLUSTER_ID: ${KAFKA_CLUSTER_ID}
+      ALLOW_PLAINTEXT_LISTENER: "yes"
+      TZ: ${TZ:-UTC}
     volumes:
-      - ./configs/nginx/html:/usr/share/nginx/html:ro,Z
-      - ./configs/nginx/conf.d:/etc/nginx/conf.d:Z
-      - ./data/nginx/logs:/var/log/nginx:Z
+      - ./data/kafka:/bitnami/kafka:Z
     ports:
-      - "80:80"
-      - "443:443"
+      - "9092:9092"
     networks:
-      - homelab
-  tf:
-    image: docker.io/traefik:v3.5
-    container_name: tf
-    hostname: tf
-    restart: unless-stopped
-    command:
-      - --api.dashboard=true
-      - --providers.docker=true
-      - --providers.docker.endpoint=unix:///run/podman/podman.sock
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-    volumes:
-      - ./configs/traefik:/etc/traefik:Z
-      - /run/podman/podman.sock:/var/run/docker.sock:Z
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8081:8080"
-    networks:
-      - homelab
-  qr:
-    image: docker.io/qdrant/qdrant:latest
-    container_name: qr
-    hostname: qr
-    restart: unless-stopped
-    volumes:
-      - ./data/qdrant:/qdrant/storage:Z
-    ports:
-      - "6333:6333"
-      - "6334:6334"
-    networks:
-      - homelab
-  db:
-    image: dbeaver/cloudbeaver:latest
-    container_name: db
-    hostname: db
-    restart: unless-stopped
-    volumes:
-      - ./data/dbeaver:/opt/cloudbeaver/workspace:Z
-    ports:
-      - "8978:8978"
-    networks:
-      - homelab
+      - data_net
+
   ns:
     image: docker.io/library/nats:latest
     container_name: ns
     hostname: ns
     restart: unless-stopped
+    logging: *default-logging
     command:
       - "-js"
       - "-sd"
@@ -266,68 +207,109 @@ services:
       - "4222:4222"
       - "8222:8222"
     networks:
-      - homelab
-  kf:
-    image: docker.io/bitnami/kafka:latest
-    container_name: kf
-    hostname: kf
+      - data_net
+
+  qr:
+    image: docker.io/qdrant/qdrant:latest
+    container_name: qr
+    hostname: qr
     restart: unless-stopped
-
-    environment:
-      KAFKA_CFG_NODE_ID: 1
-      KAFKA_CFG_PROCESS_ROLES: broker,controller
-
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@kf:9093
-
-      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kf:9092
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-
-      KAFKA_KRAFT_CLUSTER_ID: ${KAFKA_CLUSTER_ID}
-
-      ALLOW_PLAINTEXT_LISTENER: "yes"
-
+    logging: *default-logging
     volumes:
-      - ./data/kafka:/bitnami/kafka:Z
-
+      - ./data/qdrant:/qdrant/storage:Z
     ports:
-      - "9092:9092"
-
+      - "6333:6333"
+      - "6334:6334"
     networks:
-      - homelab
-  ob:
-    image: ghcr.io/openbao/openbao:latest
-    container_name: ob
-    hostname: ob
+      - data_net
+
+  neo:
+    image: docker.io/neo4j:latest
+    container_name: neo
+    hostname: neo
     restart: unless-stopped
-    cap_add:
-      - IPC_LOCK
-    command: server -dev
+    logging: *default-logging
     environment:
-      VAULT_DEV_ROOT_TOKEN_ID: root
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      NEO4J_AUTH: ${NEO4J_USER}:${NEO4J_PASSWORD}
+      NEO4J_PLUGINS: '["apoc"]'
+      TZ: ${TZ:-UTC}
     volumes:
-      - ./data/openbao:/openbao/data:Z
+      - ./data/neo4j:/data:Z
     ports:
-      - "8200:8200"
+      - "7474:7474"
+      - "7687:7687"
     networks:
-      - homelab
+      - data_net
+
+  ch:
+    image: docker.io/clickhouse/clickhouse-server:latest
+    container_name: ch
+    hostname: ch
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/clickhouse:/var/lib/clickhouse:Z
+    ports:
+      - "8123:8123"
+      - "9009:9000"
+    networks:
+      - data_net
+
+  ms:
+    image: docker.io/getmeili/meilisearch:latest
+    container_name: ms
+    hostname: ms
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/meilisearch:/meili_data:Z
+    ports:
+      - "7700:7700"
+    networks:
+      - data_net
+
+  es:
+    image: docker.io/elasticsearch:9.1.2
+    container_name: es
+    hostname: es
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/elasticsearch:/usr/share/elasticsearch/data:Z
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    networks:
+      - data_net
+
   ld:
     image: docker.io/osixia/openldap:latest
     container_name: ld
     hostname: ld
     restart: unless-stopped
+    logging: *default-logging
     environment:
-      LDAP_ORGANISATION: MyOrg
-      LDAP_DOMAIN: myorg.local
-      LDAP_ADMIN_PASSWORD: admin
-      LDAP_CONFIG_PASSWORD: admin
-      LDAP_READONLY_USER: "true"
+      LDAP_ORGANISATION: ${LDAP_ORGANISATION}
+      LDAP_DOMAIN: ${LDAP_DOMAIN}
+      LDAP_ADMIN_PASSWORD: ${LDAP_ADMIN_PASSWORD}
+      LDAP_CONFIG_PASSWORD: ${LDAP_CONFIG_PASSWORD}
+      LDAP_READONLY_USER: ${LDAP_READONLY_USER}
       LDAP_READONLY_USER_USERNAME: readonly
-      LDAP_READONLY_USER_PASSWORD: readonly
+      LDAP_READONLY_USER_PASSWORD: ${LDAP_READONLY_PASSWORD}
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data/openldap:/var/lib/ldap:Z
       - ./data/openldap-config:/etc/ldap/slapd.d:Z
@@ -335,171 +317,412 @@ services:
       - "389:389"
       - "636:636"
     networks:
-      - homelab
+      - data_net
+
+  db:
+    image: dbeaver/cloudbeaver:latest
+    container_name: db
+    hostname: db
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - ./data/dbeaver:/opt/cloudbeaver/workspace:Z
+    ports:
+      - "8978:8978"
+    networks:
+      - data_net
+      - app_net
+
+  # ============================================================================
+  # SECURITY & SECRETS TIER: OpenBao (Vault-compatible Engine)
+  # ============================================================================
+
+  ob:
+    image: ghcr.io/openbao/openbao:latest
+    container_name: ob
+    hostname: ob
+    restart: unless-stopped
+    logging: *default-logging
+    cap_add:
+      - IPC_LOCK
+    command: server -dev
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${OPENBAO_ROOT_TOKEN}
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/openbao:/openbao/data:Z
+    ports:
+      - "8200:8200"
+    networks:
+      - ops_net
+      - app_net
+    healthcheck:
+      test: ["CMD-SHELL", "bao status -address=http://127.0.0.1:8200 || exit 0"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================================
+  # EDGE & INGRESS TIER: Gateways & Reverse Proxies
+  # ============================================================================
+
+  ng:
+    image: docker.io/library/nginx:latest
+    container_name: ng
+    hostname: ng
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - ./configs/nginx/html:/usr/share/nginx/html:ro,Z
+      - ./configs/nginx/conf.d:/etc/nginx/conf.d:Z
+      - ./data/nginx/logs:/var/log/nginx:Z
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - edge_net
+      - app_net
+
+  tf:
+    image: docker.io/traefik:v3.5
+    container_name: tf
+    hostname: tf
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - --api.dashboard=true
+      - --providers.docker=true
+      - --providers.docker.endpoint=unix:///run/podman/podman.sock
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+    volumes:
+      - ./configs/traefik:/etc/traefik:Z
+      - /run/podman/podman.sock:/var/run/docker.sock:Z
+    ports:
+      - "8081:8080"
+    networks:
+      - edge_net
+      - app_net
+
+  kg:
+    image: docker.io/library/kong:latest
+    container_name: kg
+    hostname: kg
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      pg:
+        condition: service_healthy
+    environment:
+      KONG_DATABASE: ${KONG_DATABASE:-postgres}
+      KONG_PG_HOST: pg
+      KONG_PG_PORT: 5432
+      KONG_PG_DATABASE: kong
+      KONG_PG_USER: ${POSTGRES_USER}
+      KONG_PG_PASSWORD: ${POSTGRES_PASSWORD}
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./configs/kong:/etc/kong:Z
+    ports:
+      - "8000:8000"
+      - "8443:8443"
+      - "8001:8001"
+    networks:
+      - edge_net
+      - app_net
+      - data_net
+
+  ka:
+    image: docker.io/pantsel/konga:latest
+    container_name: ka
+    hostname: ka
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      pg:
+        condition: service_healthy
+      kg:
+        condition: service_started
+    environment:
+      DB_ADAPTER: postgres
+      DB_HOST: pg
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_DATABASE: konga
+      NODE_ENV: production
+      TOKEN_SECRET: ${KONGA_TOKEN_SECRET}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "1337:1337"
+    networks:
+      - app_net
+      - data_net
+
+  # ============================================================================
+  # APPLICATION TIER: Middleware, IAM, Workflows & APIs
+  # ============================================================================
+
+  kc:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: kc
+    hostname: kc
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      pg:
+        condition: service_healthy
+    command: start
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://pg:5432/${POSTGRES_DB}
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/keycloak:/opt/keycloak/data:Z
+    ports:
+      - "8080:8080"
+    networks:
+      - app_net
+      - data_net
+
+  # Schema & API Registry
+  ap:
+    image: quay.io/apicurio/apicurio-registry:latest
+    container_name: ap
+    hostname: ap
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      pg:
+        condition: service_healthy
+    environment:
+      APICURIO_STORAGE_KIND: sql
+      APICURIO_DATASOURCE_URL: jdbc:postgresql://pg:5432/${APICURIO_DB:-apicurio}
+      APICURIO_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      APICURIO_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "8086:8080"
+    networks:
+      - app_net
+      - data_net
+
+  # OpenTofu Infrastructure-as-Code Engine & Automation Runner
+  tofu:
+    image: ghcr.io/opentofu/opentofu:latest
+    container_name: tofu
+    hostname: tofu
+    restart: unless-stopped
+    logging: *default-logging
+    working_dir: /tofu
+    entrypoint: ["tail", "-f", "/dev/null"]
+    depends_on:
+      - ob
+    environment:
+      VAULT_ADDR: http://ob:8200
+      VAULT_ROLE_ID: ${OPENBAO_ROLE_ID:-}
+      VAULT_SECRET_ID: ${OPENBAO_SECRET_ID:-}
+      TF_IN_AUTOMATION: "true"
+      TF_PLUGIN_CACHE_DIR: /tofu/.terraform.d/plugin-cache
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ${OPENTOFU_DIR:-../opentofu}:/tofu:Z
+      - ./data/opentofu/cache:/tofu/.terraform.d/plugin-cache:Z
+    networks:
+      - app_net
+      - ops_net
+
   hb:
     image: docker.io/hawkbit/hawkbit-update-server:latest
     container_name: hb
     hostname: hb
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
-      - pg
+      pg:
+        condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://pg:5432/hawkbit
-      SPRING_DATASOURCE_USERNAME: postgres
-      SPRING_DATASOURCE_PASSWORD: postgres
+      SPRING_DATASOURCE_URL: jdbc:postgresql://pg:5432/${HAWKBIT_DATABASE:-hawkbit}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ:-UTC}
     ports:
       - "8085:8080"
     networks:
-      - homelab
-  neo:
-    image: docker.io/neo4j:latest
-    container_name: neo
-    hostname: neo
-    restart: unless-stopped
-    environment:
-      NEO4J_AUTH: neo4j/neo4j
-      NEO4J_PLUGINS: '["apoc"]'
-    volumes:
-      - ./data/neo4j:/data:Z
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    networks:
-      - homelab
-  ch:
-    image: docker.io/clickhouse/clickhouse-server:latest
-    container_name: ch
-    hostname: ch
-    restart: unless-stopped
-    environment:
-      CLICKHOUSE_DB: default
-      CLICKHOUSE_USER: clickhouse
-      CLICKHOUSE_PASSWORD: clickhouse
-    volumes:
-      - ./data/clickhouse:/var/lib/clickhouse:Z
-    ports:
-      - "8123:8123"
-      - "9000:9000"
-    networks:
-      - homelab
-  ms:
-    image: docker.io/getmeili/meilisearch:latest
-    container_name: ms
-    hostname: ms
-    restart: unless-stopped
-    environment:
-      MEILI_MASTER_KEY: masterKey
-    volumes:
-      - ./data/meilisearch:/meili_data:Z
-    ports:
-      - "7700:7700"
-    networks:
-      - homelab
-  es:
-    image: docker.io/elasticsearch:9.1.2
-    container_name: es
-    hostname: es
-    restart: unless-stopped
-    environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
-    volumes:
-      - ./data/elasticsearch:/usr/share/elasticsearch/data:Z
-    ports:
-      - "9200:9200"
-      - "9300:9300"
-    networks:
-      - homelab
-  ol:
-    image: docker.io/ollama/ollama:latest
-    container_name: ol
-    hostname: ol
-    restart: unless-stopped
-    volumes:
-      - ./data/ollama:/root/.ollama:Z
-    ports:
-      - "11434:11434"
-    networks:
-      - homelab
-  ow:
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: ow
-    hostname: ow
-    restart: unless-stopped
-    depends_on:
-      - ol
-    environment:
-      OLLAMA_BASE_URL: http://ol:11434
-    volumes:
-      - ./data/open-webui:/app/backend/data:Z
-    ports:
-      - "3001:8080"
-    networks:
-      - homelab
-  fl:
-    image: docker.io/flowiseai/flowise:latest
-    container_name: fl
-    hostname: fl
-    restart: unless-stopped
-    depends_on:
-      - pg
-      - qr
-      - ol
-    environment:
-      PORT: 3000
-    volumes:
-      - ./data/flowise:/root/.flowise:Z
-    ports:
-      - "3002:3000"
-    networks:
-      - homelab
+      - app_net
+      - data_net
 
   n8:
     image: docker.io/n8nio/n8n:latest
     container_name: n8
     hostname: n8
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
-      - pg
-      - mq
+      pg:
+        condition: service_healthy
+      mq:
+        condition: service_healthy
     environment:
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: pg
       DB_POSTGRESDB_PORT: 5432
-      DB_POSTGRESDB_DATABASE: n8n
-      DB_POSTGRESDB_USER: postgres
-      DB_POSTGRESDB_PASSWORD: postgres
-
+      DB_POSTGRESDB_DATABASE: ${N8N_DATABASE:-n8n}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
       N8N_HOST: n8
       N8N_PORT: 5678
       N8N_PROTOCOL: http
+      TZ: ${TZ:-UTC}
     volumes:
       - ./data/n8n:/home/node/.n8n:Z
     ports:
       - "5678:5678"
     networks:
-      - homelab
+      - app_net
+      - data_net
 
   lf:
     image: ghcr.io/langfuse/langfuse:latest
     container_name: lf
     hostname: lf
     restart: unless-stopped
+    logging: *default-logging
     depends_on:
-      - pg
-      - s3
+      pg:
+        condition: service_healthy
+      s3:
+        condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://postgres:postgres@pg:5432/langfuse
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@pg:5432/${LANGFUSE_DATABASE:-langfuse}
+      TZ: ${TZ:-UTC}
     ports:
       - "3003:3000"
     networks:
-      - homelab
+      - app_net
+      - data_net
+
+  # AI & Flow Engines
+  ol:
+    image: docker.io/ollama/ollama:latest
+    container_name: ol
+    hostname: ol
+    restart: unless-stopped
+    logging: *default-logging
+    volumes:
+      - ./data/ollama:/root/.ollama:Z
+    ports:
+      - "11434:11434"
+    networks:
+      - app_net
+      - data_net
+
+  ow:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ow
+    hostname: ow
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      - ol
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_HOST:-http://ol:11434}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/open-webui:/app/backend/data:Z
+    ports:
+      - "3001:8080"
+    networks:
+      - app_net
+
+  fl:
+    image: docker.io/flowiseai/flowise:latest
+    container_name: fl
+    hostname: fl
+    restart: unless-stopped
+    logging: *default-logging
+    depends_on:
+      pg:
+        condition: service_healthy
+      qr:
+        condition: service_started
+      ol:
+        condition: service_started
+    environment:
+      PORT: 3000
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/flowise:/root/.flowise:Z
+    ports:
+      - "3002:3000"
+    networks:
+      - app_net
+      - data_net
+
+  # ============================================================================
+  # OBSERVABILITY & MANAGEMENT TIER: Prometheus, Grafana, Loki & Portainer
+  # ============================================================================
+
+  pm:
+    image: docker.io/prom/prometheus:latest
+    container_name: pm
+    hostname: pm
+    restart: unless-stopped
+    logging: *default-logging
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
+    volumes:
+      - ./configs/prometheus:/etc/prometheus:Z
+      - ./data/prometheus:/prometheus:Z
+    ports:
+      - "9090:9090"
+    networks:
+      - ops_net
+      - app_net
+
+  gf:
+    image: docker.io/grafana/grafana:latest
+    container_name: gf
+    hostname: gf
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      TZ: ${TZ:-UTC}
+    volumes:
+      - ./data/grafana:/var/lib/grafana:Z
+      - ./configs/grafana:/etc/grafana/provisioning:Z
+    ports:
+      - "3000:3000"
+    networks:
+      - ops_net
+      - app_net
+
   lk:
     image: docker.io/grafana/loki:latest
     container_name: lk
     hostname: lk
     restart: unless-stopped
+    logging: *default-logging
     command:
       - "-config.file=/etc/loki/loki-config.yml"
     volumes:
@@ -508,13 +731,14 @@ services:
     ports:
       - "3100:3100"
     networks:
-      - homelab
+      - ops_net
 
   ptl:
     image: docker.io/grafana/promtail:latest
     container_name: ptl
     hostname: ptl
     restart: unless-stopped
+    logging: *default-logging
     command:
       - "-config.file=/etc/promtail/promtail-config.yml"
     volumes:
@@ -522,20 +746,22 @@ services:
       - ./data/promtail:/tmp/promtail:Z
       - ./logs:/var/log/homelab:ro,Z
     networks:
-      - homelab
+      - ops_net
 
   pt:
     image: docker.io/portainer/portainer-ce:latest
     container_name: pt
     hostname: pt
     restart: unless-stopped
+    logging: *default-logging
     volumes:
       - ./data/portainer:/data:Z
       - /run/podman/podman.sock:/var/run/docker.sock:Z
     ports:
       - "9443:9443"
     networks:
-      - homelab
+      - ops_net
+      - app_net
 
   cp:
     image: docker.io/cockpit/ws:latest

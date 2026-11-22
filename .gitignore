@@ -1,0 +1,19 @@
+# Sensitive environment variables
+.env
+.env.local
+.env.*.local
+
+# Data and runtime directories
+data/
+logs/
+
+# OpenTofu runtime and caches
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Temporary & system files
+*.log
+.DS_Store
