@@ -181,3 +181,17 @@
   - Documented OpenBao (`hcv`) vault reference alternatives.
 
 ---
+
+
+## [2026-11-22 17:40:26 UTC] Kong OpenBao AppRole & Vault Secret Resolution
+**User Prompt:**
+> can kong also fetch postgres credentials from vault also ? if yes do it. where kong fetch openbao roleid and secretid?  also update openbao if needed
+
+**Actions Taken:**
+- Updated `ob` (OpenBao) service in `podman-compose.yml` with `data_net` access.
+- Updated `kg` (Kong) service in `podman-compose.yml`:
+  - Added dependency on `ob: condition: service_healthy`.
+  - Mounted `openbao_role_id` and `openbao_secret_id` container secrets.
+  - Configured HCV vault backend with AppRole authentication and dynamic PostgreSQL secret queries.
+
+---

@@ -361,6 +361,7 @@ services:
     networks:
       - ops_net
       - app_net
+      - data_net
     healthcheck:
       test: ["CMD-SHELL", "bao status -address=http://127.0.0.1:8200 || exit 0"]
       interval: 15s
@@ -419,24 +420,29 @@ services:
     depends_on:
       pg:
         condition: service_healthy
+      ob:
+        condition: service_healthy
     secrets:
-      - postgres_user
-      - postgres_password
+      - openbao_role_id
+      - openbao_secret_id
     environment:
       KONG_DATABASE: ${KONG_DATABASE:-postgres}
       KONG_PG_HOST: pg
       KONG_PG_PORT: 5432
       KONG_PG_DATABASE: kong
-      # Option 3: Secrets Management (Vault / File Reference - Zero Plaintext)
+      # OpenBao (HCV) Vault Secrets Integration via AppRole (Zero Plaintext)
       KONG_VAULTS: "file,hcv"
       KONG_VAULT_FILE_PATH: /run/secrets
-      KONG_PG_USER: "{vault://file/postgres_user}"
-      KONG_PG_PASSWORD: "{vault://file/postgres_password}"
-      # OpenBao (HCV) Vault integration alternative:
-      # KONG_VAULT_HCV_HOST: ob
-      # KONG_VAULT_HCV_PORT: 8200
-      # KONG_VAULT_HCV_PROTOCOL: http
-      # KONG_PG_PASSWORD: "{vault://hcv/secret/data/kong#password}"
+      KONG_VAULT_HCV_HOST: ob
+      KONG_VAULT_HCV_PORT: 8200
+      KONG_VAULT_HCV_PROTOCOL: http
+      KONG_VAULT_HCV_AUTH_METHOD: approle
+      KONG_VAULT_HCV_APPROLE_ROLE_ID: "{vault://file/openbao_role_id}"
+      KONG_VAULT_HCV_APPROLE_SECRET_ID: "{vault://file/openbao_secret_id}"
+      KONG_VAULT_HCV_MOUNT: secret
+      KONG_VAULT_HCV_KV_VERSION: v2
+      KONG_PG_USER: "{vault://hcv/secret/data/postgres#username}"
+      KONG_PG_PASSWORD: "{vault://hcv/secret/data/postgres#password}"
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr
