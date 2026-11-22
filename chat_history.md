@@ -126,3 +126,15 @@
 - Provided guidance on how the agent resumes seamlessly with full memory upon re-opening.
 
 ---
+
+
+## [2026-11-22 15:44:59 UTC] CLI Session Management & Workspace Switching
+**User Prompt:**
+> how can get and see all sessions in cli . suppose i want to create a new topic and want to save in a deferent workspace . how can i go to another discussion ?
+
+**Actions Taken:**
+- Provided instructions for listing CLI sessions and conversation IDs.
+- Explained starting new discussions in different workspaces (`cd <dir> && agy`, `--add-dir`, `--project`, `--new-project`).
+- Explained switching between discussions (`agy --continue`, `agy --conversation <id>`).
+
+---
