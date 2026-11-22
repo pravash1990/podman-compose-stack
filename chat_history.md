@@ -138,3 +138,15 @@
 - Explained switching between discussions (`agy --continue`, `agy --conversation <id>`).
 
 ---
+
+
+## [2026-11-22 15:59:47 UTC] Start PostgreSQL Container & Branch Tracking to Postgres Repo
+**User Prompt:**
+> now start postgres and run in container . now all discussion chat should go to PoStgres repO
+
+**Actions Taken:**
+- Deployed PostgreSQL 17 container `pg` listening on port 5432.
+- Verified healthcheck (`pg_isready -U postgres -d app`).
+- Branched future PostgreSQL conversation logging to `/home/pdash/projects/postgres/chat_history.md`.
+
+---
