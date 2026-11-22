@@ -164,3 +164,20 @@
 - Re-launched `pg` container mounting read-only files in `/run/secrets/`. Verified zero passwords in `podman inspect`.
 
 ---
+
+
+## [2026-11-22 17:30:02 UTC] Configure Kong with Vault / File-Based Secret References
+**User Prompt:**
+> can you update the podman-compose file for kong for the option 3
+
+**Actions Taken:**
+- Updated service `kg` (Kong) in `podman-compose.yml`:
+  - Mounted container secrets `postgres_user` and `postgres_password` (`/run/secrets/`).
+  - Enabled Kong secret vaults (`KONG_VAULTS: "file,hcv"`).
+  - Configured Kong Vault file path (`KONG_VAULT_FILE_PATH: /run/secrets`).
+  - Replaced plain environment variables with Kong Vault references:
+    - `KONG_PG_USER: "{vault://file/postgres_user}"`
+    - `KONG_PG_PASSWORD: "{vault://file/postgres_password}"`
+  - Documented OpenBao (`hcv`) vault reference alternatives.
+
+---
