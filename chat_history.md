@@ -102,3 +102,16 @@
   - `sav` (`main`)
 
 ---
+
+
+## [2026-11-22 15:39:57 UTC] Session Resumption & Continuity Guidance
+**User Prompt:**
+> how can i access these sesssion after close my window?
+
+**Actions Taken:**
+- Explained methods for accessing and resuming this session:
+  - Antigravity IDE / Desktop App chat history panel and `@` conversation mentions.
+  - CLI continuation flags: `agy --continue` / `agy -c` and `agy --conversation fc7f9fb2-9009-4486-be33-b36928ede4fc`.
+  - Permanent project tracking records in `chat_history.md` across repositories and local transcript storage.
+
+---
