@@ -52,10 +52,14 @@ services:
     hostname: pg
     restart: unless-stopped
     logging: *default-logging
+    secrets:
+      - postgres_user
+      - postgres_password
+      - postgres_db
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER_FILE: /run/secrets/postgres_user
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB_FILE: /run/secrets/postgres_db
       TZ: ${TZ:-UTC}
     volumes:
       - ./data/postgres:/var/lib/postgresql/data:Z
@@ -64,7 +68,7 @@ services:
     networks:
       - data_net
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      test: ["CMD-SHELL", "pg_isready -U $$(cat /run/secrets/postgres_user 2>/dev/null || echo $$POSTGRES_USER) -d $$(cat /run/secrets/postgres_db 2>/dev/null || echo $$POSTGRES_DB)"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -533,10 +537,13 @@ services:
     entrypoint: ["tail", "-f", "/dev/null"]
     depends_on:
       - ob
+    secrets:
+      - openbao_role_id
+      - openbao_secret_id
     environment:
       VAULT_ADDR: http://ob:8200
-      VAULT_ROLE_ID: ${OPENBAO_ROLE_ID:-}
-      VAULT_SECRET_ID: ${OPENBAO_SECRET_ID:-}
+      VAULT_ROLE_ID_FILE: /run/secrets/openbao_role_id
+      VAULT_SECRET_ID_FILE: /run/secrets/openbao_secret_id
       TF_IN_AUTOMATION: "true"
       TF_PLUGIN_CACHE_DIR: /tofu/.terraform.d/plugin-cache
       TZ: ${TZ:-UTC}
@@ -773,3 +780,19 @@ services:
     volumes:
       - /run/dbus:/run/dbus
       - /:/host
+
+
+# ==============================================================================
+# SECRETS TIER: File-based container secrets (Never exposed via env or inspect)
+# ==============================================================================
+secrets:
+  postgres_user:
+    file: ./secrets/postgres_user.txt
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  postgres_db:
+    file: ./secrets/postgres_db.txt
+  openbao_role_id:
+    file: ./secrets/openbao_role_id.txt
+  openbao_secret_id:
+    file: ./secrets/openbao_secret_id.txt

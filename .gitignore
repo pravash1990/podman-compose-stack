@@ -1,7 +1,11 @@
-# Sensitive environment variables
+# Sensitive environment variables & secrets
 .env
 .env.local
 .env.*.local
+secrets/
+*.secret
+*.key
+
 
 # Data and runtime directories
 data/

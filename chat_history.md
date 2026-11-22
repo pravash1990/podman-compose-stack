@@ -150,3 +150,17 @@
 - Branched future PostgreSQL conversation logging to `/home/pdash/projects/postgres/chat_history.md`.
 
 ---
+
+
+## [2026-11-22 16:11:30 UTC] Eliminate Cleartext Credentials & Implement File-Based Secrets
+**User Prompt:**
+> │ stack/data/postgres:/var/lib/postgresql/dat  here you have mentioned userid and password in compose file. i told you to donot expose these.
+
+**Actions Taken:**
+- Implemented file-based secrets architecture for `pg` and `tofu` in `podman-compose.yml`:
+  - Defined top-level `secrets:` block for `postgres_user`, `postgres_password`, `postgres_db`, `openbao_role_id`, `openbao_secret_id`.
+  - Replaced inline environment variables with `POSTGRES_*_FILE` and `VAULT_*_FILE`.
+- Added `secrets/` to `.gitignore` to prevent any secret files from being committed.
+- Re-launched `pg` container mounting read-only files in `/run/secrets/`. Verified zero passwords in `podman inspect`.
+
+---
