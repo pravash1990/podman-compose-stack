@@ -80,11 +80,9 @@
 
 **Actions Taken:**
 - Verified git remotes and branches across all repositories.
-- Pushed commits to remote GitHub repositories:
-  - `podman-compose-stack` (`master`)
-  - `kong` (`main`)
-  - `openbao` (`main`)
-  - `opentofu` (`main`)
-  - `sav` (`main`)
+- Attempted push to GitHub remotes (`podman-compose-stack`, `kong`, `openbao`, `opentofu`, `sav`).
+- GitHub rejected push with HTTP 403 (`Write access to repository not granted`).
+- Identified root cause: The GitHub Fine-Grained Personal Access Token (`github_pat_*`) currently lacks **Contents: Read and write** permissions.
+- Provided step-by-step guidance to update the PAT permissions on GitHub.
 
 ---
